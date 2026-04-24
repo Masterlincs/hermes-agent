@@ -994,8 +994,87 @@ DEFAULT_CONFIG = {
         "min_interval_hours": 24,
     },
 
+    # Native smart-router — config-driven prompt classification into tiers.
+    # No external service, no API keys in source. Keys are read from ~/.hermes/.env.
+    "smart_router": {
+        "enabled": False,
+        "fallback_tier": "smart",
+        "log_decisions": True,
+        "regex": {
+            "enabled": True,
+            "patterns": {
+                "fast": [
+                    r"^!(fast)\b",
+                    r"^(hi\b|hello|^hey\s)",
+                ],
+                "code": [
+                    r"(fix.?bug|write.?function|debug|code.?review)",
+                ],
+                "research": [
+                    r"(search|find.?paper|scholarship|current events|look up)",
+                ],
+                "planning": [
+                    r"(plan|design|roadmap|architecture|system.?design|break.?down)",
+                ],
+            },
+        },
+        "classifier": {
+            "enabled": False,
+            "chain": [
+                {
+                    "model": "meta-llama/llama-3.1-8b-instruct",
+                    "provider": "nvidia",
+                    "timeout": 10,
+                },
+                {
+                    "model": "google/gemma-4-26b-a4b-it:free",
+                    "provider": "openrouter",
+                    "timeout": 8,
+                },
+            ],
+            "prompt_template": (
+                "Classify this user request into exactly one tier: fast, code, research, planning, or smart.\n"
+                "Respond with ONLY the tier name.\n"
+                "Request: {prompt}\n"
+                "Tier:"
+            ),
+        },
+        "tiers": {
+            "fast": {
+                "model": "",
+                "provider": "",
+                "max_iterations": 8,
+                "toolsets": [],
+            },
+            "code": {
+                "model": "",
+                "provider": "",
+                "max_iterations": 40,
+                "toolsets": ["terminal", "file", "code_execution"],
+            },
+            "research": {
+                "model": "",
+                "provider": "",
+                "max_iterations": 60,
+                "toolsets": ["web", "browser", "delegation"],
+            },
+            "planning": {
+                "model": "",
+                "provider": "",
+                "max_iterations": 25,
+                "toolsets": [],
+            },
+            "smart": {
+                "model": "",
+                "provider": "",
+                "max_iterations": 90,
+                "toolsets": None,
+            },
+        },
+    },
+
     # Config schema version - bump this when adding new required fields
-    "_config_version": 22,
+    "_config_version": 23,
 }
 
 # =============================================================================
@@ -2227,7 +2306,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
-    "sessions",
+    "sessions", "smart_router",
 }
 
 # Valid fields inside a custom_providers list entry

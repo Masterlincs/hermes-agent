@@ -1178,6 +1178,7 @@ class GatewayRunner:
 
         return model, runtime_kwargs
 
+
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Build the effective model/runtime config for a single turn.
 
@@ -1187,6 +1188,11 @@ class GatewayRunner:
         accordingly.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
+
+        # --- smart-router native module ---
+        from agent.smart_router import classify_prompt
+        router_result = classify_prompt(user_message)
+        # --- smart-router native module ---
 
         runtime = {
             "api_key": runtime_kwargs.get("api_key"),
@@ -1209,6 +1215,19 @@ class GatewayRunner:
                 tuple(runtime["args"]),
             ),
         }
+
+        # --- smart-router native module ---
+        if router_result and router_result.get("method") != "fallback":
+            if router_result.get("model"):
+                route["model"] = router_result["model"]
+            if router_result.get("provider"):
+                runtime["provider"] = router_result["provider"]
+                route["runtime"] = runtime
+            if router_result.get("max_iterations") is not None:
+                route["router_max_iterations"] = router_result["max_iterations"]
+            if router_result.get("toolsets") is not None:
+                route["router_enabled_toolsets"] = router_result["toolsets"]
+        # --- smart-router native module ---
 
         service_tier = getattr(self, "_service_tier", None)
         if not service_tier:
@@ -6579,14 +6598,21 @@ class GatewayRunner:
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
+            # --- smart-router insertion start ---
+            _router_max_iter = turn_route.get("router_max_iterations")
+            _router_toolsets = turn_route.get("router_enabled_toolsets")
+            _effective_max_iterations = _router_max_iter if _router_max_iter is not None else max_iterations
+            _effective_toolsets = sorted(_router_toolsets) if _router_toolsets is not None else enabled_toolsets
+            # --- smart-router insertion end ---
+
             def run_sync():
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
-                    max_iterations=max_iterations,
+                    max_iterations=_effective_max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
-                    enabled_toolsets=enabled_toolsets,
+                    enabled_toolsets=_effective_toolsets,
                     reasoning_config=reasoning_config,
                     service_tier=self._service_tier,
                     request_overrides=turn_route.get("request_overrides"),
@@ -6751,6 +6777,13 @@ class GatewayRunner:
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(question, model, runtime_kwargs)
             pr = self._provider_routing
+
+            # --- smart-router insertion start ---
+            _router_max_iter = turn_route.get("router_max_iterations")
+            _router_toolsets = turn_route.get("router_enabled_toolsets")
+            _effective_max_iterations = _router_max_iter if _router_max_iter is not None else 8
+            _effective_toolsets = sorted(_router_toolsets) if _router_toolsets is not None else []
+            # --- smart-router insertion end ---
 
             # Snapshot history from running agent or stored transcript
             running_agent = self._running_agents.get(session_key)

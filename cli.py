@@ -3206,6 +3206,7 @@ class HermesCLI:
 
         return True
 
+
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Build the effective model/runtime config for a single user turn.
 
@@ -3215,6 +3216,11 @@ class HermesCLI:
         API call is marked accordingly.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
+
+        # --- smart-router native module ---
+        from agent.smart_router import classify_prompt
+        router_result = classify_prompt(user_message)
+        # --- smart-router native module ---
 
         runtime = {
             "api_key": self.api_key,
@@ -3238,6 +3244,19 @@ class HermesCLI:
             ),
         }
 
+        # --- smart-router native module ---
+        if router_result and router_result.get("method") != "fallback":
+            if router_result.get("model"):
+                route["model"] = router_result["model"]
+            if router_result.get("provider"):
+                runtime["provider"] = router_result["provider"]
+                route["runtime"] = runtime
+            if router_result.get("max_iterations") is not None:
+                route["router_max_iterations"] = router_result["max_iterations"]
+            if router_result.get("toolsets") is not None:
+                route["router_enabled_toolsets"] = router_result["toolsets"]
+        # --- smart-router native module ---
+
         service_tier = getattr(self, "service_tier", None)
         if not service_tier:
             route["request_overrides"] = None
@@ -3250,7 +3269,7 @@ class HermesCLI:
         route["request_overrides"] = overrides
         return route
 
-    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
+    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None, max_iterations_override: int = None, enabled_toolsets_override: list = None) -> bool:
         """
         Initialize the agent on first use.
         When resuming a session, restores conversation history from SQLite.
@@ -3347,8 +3366,8 @@ class HermesCLI:
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),
-                max_iterations=self.max_turns,
-                enabled_toolsets=self.enabled_toolsets,
+                max_iterations=max_iterations_override if max_iterations_override is not None else self.max_turns,
+                enabled_toolsets=enabled_toolsets_override if enabled_toolsets_override is not None else self.enabled_toolsets,
                 verbose_logging=self.verbose,
                 quiet_mode=not self.verbose,
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
@@ -6302,6 +6321,8 @@ class HermesCLI:
 
         def run_background():
             try:
+                _bg_max_iter = turn_route.get("router_max_iterations")
+                _bg_toolsets = turn_route.get("router_enabled_toolsets")
                 bg_agent = AIAgent(
                     model=turn_route["model"],
                     api_key=turn_route["runtime"].get("api_key"),
@@ -6310,8 +6331,8 @@ class HermesCLI:
                     api_mode=turn_route["runtime"].get("api_mode"),
                     acp_command=turn_route["runtime"].get("command"),
                     acp_args=turn_route["runtime"].get("args"),
-                    max_iterations=self.max_turns,
-                    enabled_toolsets=self.enabled_toolsets,
+                    max_iterations=_bg_max_iter if _bg_max_iter is not None else self.max_turns,
+                    enabled_toolsets=_bg_toolsets if _bg_toolsets is not None else self.enabled_toolsets,
                     quiet_mode=True,
                     verbose_logging=False,
                     session_id=task_id,
@@ -6438,6 +6459,8 @@ class HermesCLI:
 
         def run_btw():
             try:
+                _btw_max_iter = turn_route.get("router_max_iterations")
+                _btw_toolsets = turn_route.get("router_enabled_toolsets")
                 btw_agent = AIAgent(
                     model=turn_route["model"],
                     api_key=turn_route["runtime"].get("api_key"),
@@ -6446,8 +6469,8 @@ class HermesCLI:
                     api_mode=turn_route["runtime"].get("api_mode"),
                     acp_command=turn_route["runtime"].get("command"),
                     acp_args=turn_route["runtime"].get("args"),
-                    max_iterations=8,
-                    enabled_toolsets=[],
+                    max_iterations=_btw_max_iter if _btw_max_iter is not None else 8,
+                    enabled_toolsets=_btw_toolsets if _btw_toolsets is not None else [],
                     quiet_mode=True,
                     verbose_logging=False,
                     session_id=task_id,
@@ -8305,6 +8328,8 @@ class HermesCLI:
             model_override=turn_route["model"],
             runtime_override=turn_route["runtime"],
             request_overrides=turn_route.get("request_overrides"),
+            max_iterations_override=turn_route.get("router_max_iterations"),
+            enabled_toolsets_override=turn_route.get("router_enabled_toolsets"),
         ):
             return None
         
@@ -11029,6 +11054,8 @@ def main(
                     model_override=turn_route["model"],
                     runtime_override=turn_route["runtime"],
                     request_overrides=turn_route.get("request_overrides"),
+                    max_iterations_override=turn_route.get("router_max_iterations"),
+                    enabled_toolsets_override=turn_route.get("router_enabled_toolsets"),
                 ):
                     cli.agent.quiet_mode = True
                     cli.agent.suppress_status_output = True
