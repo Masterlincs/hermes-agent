@@ -92,6 +92,68 @@ _active_subagents_lock = threading.Lock()
 _active_subagents: Dict[str, Dict[str, Any]] = {}
 
 
+# ---------------------------------------------------------------------------
+# Phase tracker for transparent delegation
+# ---------------------------------------------------------------------------
+
+_PLANNING_TOOLS = frozenset({"file_read", "web_search", "web_extract", "grep", "glob", "browser_navigate", "browser_snapshot", "browser_vision", "skill_execute", "delegate_task", "memory", "session_search", "clarify"})
+_EXECUTING_TOOLS = frozenset({"file_write", "file_edit", "terminal_execute", "execute_code", "browser_click", "browser_type", "browser_scroll", "browser_press", "browser_console", "file_patch", "image_gen", "send_message", "cronjob_schedule", "tts_speak"})
+_REVIEWING_TOOLS = frozenset({"file_read", "web_search", "web_extract", "grep", "glob", "browser_snapshot", "browser_vision", "session_search"})
+_WRITE_TOOLS = frozenset({"file_write", "file_edit", "file_patch", "terminal_execute"})
+
+
+class _SubagentPhaseTracker:
+    """Tracks the phase of a subagent's execution for structured progress reports.
+
+    Phase transitions are inferred from tool usage patterns:
+    - ``planning`` → initial reading/searching/researching
+    - ``executing`` → writing, editing, running commands, making changes
+    - ``reviewing`` → verifying results, re-reading, checking
+    - ``done`` → completed
+    """
+
+    def __init__(self):
+        self.phase: str = "planning"
+        self.transitions: list[dict] = [{"phase": "planning", "ts": time.time()}]
+        self._has_executed = False
+        self._has_written = False
+
+    def record_tool(self, tool_name: str) -> str:
+        """Record a tool call and return the current phase (may trigger transition)."""
+        if tool_name in _WRITE_TOOLS:
+            self._has_written = True
+
+        if tool_name in _EXECUTING_TOOLS:
+            self._has_executed = True
+
+        # planning → executing: first write or execute tool
+        if self.phase == "planning" and (tool_name in _EXECUTING_TOOLS or tool_name in _WRITE_TOOLS):
+            self._transition("executing")
+
+        # executing → reviewing: read/search after having executed
+        elif self.phase == "executing" and self._has_written and tool_name in _REVIEWING_TOOLS:
+            # Only transition if we've done actual writing and now we're checking
+            if tool_name not in _EXECUTING_TOOLS:
+                self._transition("reviewing")
+
+        # reviewing → executing: went back to make more changes
+        elif self.phase == "reviewing" and (tool_name in _EXECUTING_TOOLS or tool_name in _WRITE_TOOLS):
+            self._transition("executing")
+
+        return self.phase
+
+    def _transition(self, new_phase: str) -> None:
+        if new_phase != self.phase:
+            self.phase = new_phase
+            self.transitions.append({"phase": new_phase, "ts": time.time()})
+
+    def mark_done(self) -> None:
+        self._transition("done")
+
+    def summary(self) -> list[dict]:
+        return list(self.transitions)
+
+
 def set_spawn_paused(paused: bool) -> bool:
     """Globally block/unblock new delegate_task spawns.
 
@@ -610,6 +672,9 @@ def _build_child_progress_callback(
     prefix = f"[{task_index + 1}] " if task_count > 1 else ""
     goal_label = (goal or "").strip()
 
+    # Phase tracker for structured progress transparency
+    _phase_tracker = _SubagentPhaseTracker()
+
     # Gateway: batch tool names, flush periodically
     _BATCH_SIZE = 5
     _batch: List[str] = []
@@ -641,6 +706,7 @@ def _build_child_progress_callback(
             return
         payload = _identity_kwargs()
         payload.update(kwargs)  # caller overrides (e.g. status, duration_seconds)
+        payload["phase"] = _phase_tracker.phase
         try:
             parent_cb(event_type, tool_name, preview, args, **payload)
         except Exception as e:
@@ -718,6 +784,7 @@ def _build_child_progress_callback(
 
         # TASK_TOOL_STARTED — display and batch for parent relay
         _tool_count[0] += 1
+        current_phase = _phase_tracker.record_tool(tool_name or "")
         if subagent_id is not None:
             with _active_subagents_lock:
                 rec = _active_subagents.get(subagent_id)
@@ -757,6 +824,8 @@ def _build_child_progress_callback(
             _batch.clear()
 
     _callback._flush = _flush
+    _callback._phase_summary = _phase_tracker.summary
+    _callback._phase = lambda: _phase_tracker.phase
     return _callback
 
 
@@ -1495,6 +1564,14 @@ def _run_single_child(
         _output_tokens = getattr(child, "session_completion_tokens", 0)
         _model = getattr(child, "model", None)
 
+        # Capture phase transitions from the progress callback
+        _phases = []
+        if child_progress_cb and hasattr(child_progress_cb, "_phase_summary"):
+            try:
+                _phases = child_progress_cb._phase_summary()
+            except Exception:
+                pass
+
         entry: Dict[str, Any] = {
             "task_index": task_index,
             "status": status,
@@ -1512,6 +1589,7 @@ def _run_single_child(
                 ),
             },
             "tool_trace": tool_trace,
+            "phases": _phases,
             # Captured before the finally block calls child.close() so the
             # parent thread can fire subagent_stop with the correct role.
             # Stripped before the dict is serialised back to the model.

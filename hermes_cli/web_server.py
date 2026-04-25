@@ -51,7 +51,7 @@ from gateway.status import get_running_pid, read_runtime_status
 try:
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
 except ImportError:
@@ -2789,6 +2789,82 @@ def _mount_plugin_api_routes():
 
 # Mount plugin API routes before the SPA catch-all.
 _mount_plugin_api_routes()
+
+
+# ---------------------------------------------------------------------------
+# Lightweight web chat (SSE-based)
+# ---------------------------------------------------------------------------
+
+_web_chat_html: Optional[str] = None
+
+
+def _get_chat_html() -> str:
+    """Return the chat HTML page, loading from disk on first call."""
+    global _web_chat_html
+    if _web_chat_html is not None:
+        return _web_chat_html
+    chat_path = Path(__file__).parent / "web_chat.html"
+    if chat_path.exists():
+        _web_chat_html = chat_path.read_text(encoding="utf-8")
+    else:
+        _web_chat_html = "<html><body><h1>Chat page not found</h1></body></html>"
+    return _web_chat_html
+
+
+@app.get("/chat")
+async def chat_page():
+    """Serve the lightweight chat HTML page."""
+    return HTMLResponse(_get_chat_html())
+
+
+@app.post("/api/chat/stream")
+async def chat_stream(request: Request):
+    """SSE streaming chat endpoint.
+
+    POST with JSON body::
+
+        {"message": "Hello!", "session_id": "chat_abc123", "model": "", "provider": ""}
+
+    Returns SSE events (token, tool_call, tool_result, error, done).
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    message = body.get("message", "")
+    if not message:
+        return JSONResponse({"error": "message is required"}, status_code=400)
+
+    session_id = body.get("session_id", "")
+    model = body.get("model", "")
+    provider = body.get("provider", "")
+
+    # Import here to avoid circular imports at module level
+    from hermes_cli.web_chat import chat_stream as _chat_stream
+
+    async def event_generator():
+        async for event in _chat_stream(message, session_id, model, provider):
+            yield event
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/api/chat/session/new")
+async def chat_new_session():
+    """Create a new chat session and return its ID."""
+    from hermes_cli.web_chat import _create_session
+    session_id = _create_session()
+    return {"session_id": session_id}
+
 
 mount_spa(app)
 

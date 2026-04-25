@@ -21,30 +21,50 @@ DEFAULT_TIER_CONFIG = {
         "provider": "",
         "max_iterations": 8,
         "toolsets": [],
+        "enabled_tools": None,   # null = all tools in the toolset
+        "disabled_tools": [],
+        "enabled_skills": None,  # null = all available skills
+        "disabled_skills": [],
     },
     "code": {
         "model": "",
         "provider": "",
         "max_iterations": 40,
         "toolsets": ["terminal", "file", "code_execution"],
+        "enabled_tools": None,
+        "disabled_tools": [],
+        "enabled_skills": None,
+        "disabled_skills": [],
     },
     "research": {
         "model": "",
         "provider": "",
         "max_iterations": 60,
         "toolsets": ["web", "browser", "delegation"],
+        "enabled_tools": None,
+        "disabled_tools": [],
+        "enabled_skills": None,
+        "disabled_skills": [],
     },
     "planning": {
         "model": "",
         "provider": "",
         "max_iterations": 25,
         "toolsets": [],
+        "enabled_tools": None,
+        "disabled_tools": [],
+        "enabled_skills": None,
+        "disabled_skills": [],
     },
     "smart": {
         "model": "",
         "provider": "",
         "max_iterations": 90,
         "toolsets": None,  # null = all available tools
+        "enabled_tools": None,
+        "disabled_tools": [],
+        "enabled_skills": None,
+        "disabled_skills": [],
     },
 }
 
@@ -199,6 +219,7 @@ def _llm_classify(prompt: str, classifier_cfg: Dict[str, Any], config: Dict[str,
 def _build_result(tier: str, confidence: float, method: str, sr_cfg: Dict[str, Any]) -> Dict[str, Any]:
     tiers = sr_cfg.get("tiers", {})
     tier_cfg = tiers.get(tier, DEFAULT_TIER_CONFIG.get(tier, {}))
+    default_tier = DEFAULT_TIER_CONFIG.get(tier, {})
 
     return {
         "tier": tier,
@@ -206,8 +227,12 @@ def _build_result(tier: str, confidence: float, method: str, sr_cfg: Dict[str, A
         "method": method,
         "model": tier_cfg.get("model", ""),
         "provider": tier_cfg.get("provider", ""),
-        "max_iterations": tier_cfg.get("max_iterations", DEFAULT_TIER_CONFIG.get(tier, {}).get("max_iterations", 90)),
-        "toolsets": tier_cfg.get("toolsets", DEFAULT_TIER_CONFIG.get(tier, {}).get("toolsets", [])),
+        "max_iterations": tier_cfg.get("max_iterations", default_tier.get("max_iterations", 90)),
+        "toolsets": tier_cfg.get("toolsets", default_tier.get("toolsets", [])),
+        "enabled_tools": tier_cfg.get("enabled_tools", default_tier.get("enabled_tools")),
+        "disabled_tools": tier_cfg.get("disabled_tools", default_tier.get("disabled_tools", [])),
+        "enabled_skills": tier_cfg.get("enabled_skills", default_tier.get("enabled_skills")),
+        "disabled_skills": tier_cfg.get("disabled_skills", default_tier.get("disabled_skills", [])),
     }
 
 
@@ -232,6 +257,10 @@ def _maybe_log(result: Dict[str, Any], prompt: str, config: Dict[str, Any]) -> N
             "provider": result["provider"],
             "max_iterations": result["max_iterations"],
             "toolsets": result["toolsets"],
+            "enabled_tools": result.get("enabled_tools"),
+            "disabled_tools": result.get("disabled_tools", []),
+            "enabled_skills": result.get("enabled_skills"),
+            "disabled_skills": result.get("disabled_skills", []),
         }
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")

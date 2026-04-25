@@ -552,11 +552,16 @@ def _get_cron_approval_mode() -> str:
         return "deny"
 
 
-def _smart_approve(command: str, description: str) -> str:
+def _smart_approve(command: str, description: str) -> dict:
     """Use the auxiliary LLM to assess risk and decide approval.
 
-    Returns 'approve' if the LLM determines the command is safe,
-    'deny' if genuinely dangerous, or 'escalate' if uncertain.
+    Returns a dict with structured assessment:
+        {
+            "verdict": "approve" | "deny" | "escalate",
+            "reason": "Short explanation (1-2 sentences)",
+            "risk_level": "low" | "medium" | "high",
+            "what_it_does": "Description of what the command actually does",
+        }
 
     Inspired by OpenAI Codex's Smart Approvals guardian subagent
     (openai/codex#13860).
@@ -576,27 +581,54 @@ Rules:
 - DENY if the command could genuinely damage the system (recursive delete of important paths, overwriting system files, fork bombs, wiping disks, dropping databases, etc.)
 - ESCALATE if you're uncertain
 
-Respond with exactly one word: APPROVE, DENY, or ESCALATE"""
+Respond with ONLY valid JSON, no other text:
+{{"verdict": "APPROVE"|"DENY"|"ESCALATE", "reason": "<1-2 sentence explanation>", "risk_level": "low"|"medium"|"high", "what_it_does": "<what the command actually does>"}}"""
 
         response = call_llm(
             task="approval",
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
-            max_tokens=16,
+            max_tokens=256,
         )
 
-        answer = (response.choices[0].message.content or "").strip().upper()
+        import json as _json
+        content = (response.choices[0].message.content or "").strip()
+        # Try to extract JSON from the response (handle markdown code blocks, etc.)
+        if "{" in content:
+            content = content[content.index("{"):]
+        if "}" in content:
+            content = content[:content.rindex("}") + 1]
+        result = _json.loads(content)
+        verdict = result.get("verdict", "ESCALATE").upper().strip()
+        reason = result.get("reason", "")
+        risk_level = result.get("risk_level", "medium")
+        what_it_does = result.get("what_it_does", "")
 
-        if "APPROVE" in answer:
-            return "approve"
-        elif "DENY" in answer:
-            return "deny"
+        if "APPROVE" in verdict:
+            return {"verdict": "approve", "reason": reason, "risk_level": risk_level, "what_it_does": what_it_does}
+        elif "DENY" in verdict:
+            return {"verdict": "deny", "reason": reason, "risk_level": risk_level, "what_it_does": what_it_does}
         else:
-            return "escalate"
+            return {"verdict": "escalate", "reason": reason or "Uncertain", "risk_level": risk_level, "what_it_does": what_it_does}
 
     except Exception as e:
         logger.debug("Smart approvals: LLM call failed (%s), escalating", e)
-        return "escalate"
+        return {"verdict": "escalate", "reason": f"LLM call failed: {e}", "risk_level": "medium", "what_it_does": ""}
+
+
+def _append_approval_audit_log(entry: dict) -> None:
+    """Write one approval decision to the append-only audit log."""
+    try:
+        from pathlib import Path
+        home = os.path.expanduser("~/.hermes")
+        log_dir = Path(home) / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "approvals.jsonl"
+        import json as _json
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(_json.dumps(entry) + "\n")
+    except Exception as e:
+        logger.debug("Failed to write approval audit log: %s", e)
 
 
 def check_dangerous_command(command: str, env_type: str,
@@ -810,23 +842,32 @@ def check_all_command_guards(command: str, env_type: str,
     # (openai/codex#13860).
     if approval_mode == "smart":
         combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
-        verdict = _smart_approve(command, combined_desc_for_llm)
-        if verdict == "approve":
-            # Auto-approve and grant session-level approval for these patterns
+        smart_result = _smart_approve(command, combined_desc_for_llm)
+        _append_approval_audit_log({
+            "ts": time.time(), "command": command[:200], "pattern": combined_desc_for_llm,
+            "verdict": smart_result["verdict"], "method": "smart",
+            "risk_level": smart_result["risk_level"], "reason": smart_result["reason"],
+            "what_it_does": smart_result["what_it_does"],
+        })
+        if smart_result["verdict"] == "approve":
             for key, _, _ in warnings:
                 approve_session(session_key, key)
-            logger.debug("Smart approval: auto-approved '%s' (%s)",
-                         command[:60], combined_desc_for_llm)
+            logger.debug("Smart approval: auto-approved '%s' (%s) — %s",
+                         command[:60], combined_desc_for_llm, smart_result["reason"])
             return {"approved": True, "message": None,
                     "smart_approved": True,
-                    "description": combined_desc_for_llm}
-        elif verdict == "deny":
-            combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
+                    "description": combined_desc_for_llm,
+                    "smart_reason": smart_result["reason"],
+                    "risk_level": smart_result["risk_level"],
+                    "what_it_does": smart_result["what_it_does"]}
+        elif smart_result["verdict"] == "deny":
             return {
                 "approved": False,
-                "message": f"BLOCKED by smart approval: {combined_desc_for_llm}. "
-                           "The command was assessed as genuinely dangerous. Do NOT retry.",
+                "message": f"BLOCKED by smart approval: {smart_result['reason']}",
                 "smart_denied": True,
+                "smart_reason": smart_result["reason"],
+                "risk_level": smart_result["risk_level"],
+                "what_it_does": smart_result["what_it_does"],
             }
         # verdict == "escalate" → fall through to manual prompt
 
@@ -928,6 +969,11 @@ def check_all_command_guards(command: str, env_type: str,
             choice = entry.result
             if not resolved or choice is None or choice == "deny":
                 reason = "timed out" if not resolved else "denied by user"
+                _append_approval_audit_log({
+                    "ts": time.time(), "command": command[:200], "pattern": combined_desc,
+                    "verdict": "deny", "method": "gateway", "risk_level": "medium",
+                    "reason": reason, "what_it_does": "",
+                })
                 return {
                     "approved": False,
                     "message": f"BLOCKED: Command {reason}. Do NOT retry this command.",
@@ -946,6 +992,11 @@ def check_all_command_guards(command: str, env_type: str,
                 # choice == "once": no persistence — command allowed this
                 # single time only, matching the CLI's behavior.
 
+            _append_approval_audit_log({
+                "ts": time.time(), "command": command[:200], "pattern": combined_desc,
+                "verdict": "approve", "method": "gateway", "risk_level": "medium",
+                "reason": f"user choice: {choice}",
+            })
             return {"approved": True, "message": None,
                     "user_approved": True, "description": combined_desc}
 
@@ -975,6 +1026,11 @@ def check_all_command_guards(command: str, env_type: str,
                                        approval_callback=approval_callback)
 
     if choice == "deny":
+        _append_approval_audit_log({
+            "ts": time.time(), "command": command[:200], "pattern": combined_desc,
+            "verdict": "deny", "method": "cli", "risk_level": "medium",
+            "reason": "user denied", "what_it_does": "",
+        })
         return {
             "approved": False,
             "message": "BLOCKED: User denied. Do NOT retry.",
@@ -993,6 +1049,11 @@ def check_all_command_guards(command: str, env_type: str,
             approve_permanent(key)
             save_permanent_allowlist(_permanent_approved)
 
+    _append_approval_audit_log({
+        "ts": time.time(), "command": command[:200], "pattern": combined_desc,
+        "verdict": "approve", "method": "cli", "risk_level": "medium",
+        "reason": f"user choice: {choice}",
+    })
     return {"approved": True, "message": None,
             "user_approved": True, "description": combined_desc}
 

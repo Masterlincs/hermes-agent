@@ -31,16 +31,20 @@ class TestApprovalModeParsing:
 class TestSmartApproval:
     def test_smart_approval_uses_call_llm(self):
         response = SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="APPROVE"))]
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content='{"verdict": "APPROVE", "reason": "Harmless one-liner", "risk_level": "low", "what_it_does": "Prints hello world"}'
+            ))]
         )
         with mock_patch("agent.auxiliary_client.call_llm", return_value=response) as mock_call:
             result = _smart_approve("python -c \"print('hello')\"", "script execution via -c flag")
 
-        assert result == "approve"
+        assert result["verdict"] == "approve"
+        assert result["reason"] == "Harmless one-liner"
+        assert result["risk_level"] == "low"
         mock_call.assert_called_once()
         assert mock_call.call_args.kwargs["task"] == "approval"
         assert mock_call.call_args.kwargs["temperature"] == 0
-        assert mock_call.call_args.kwargs["max_tokens"] == 16
+        assert mock_call.call_args.kwargs["max_tokens"] == 256
 
 
 class TestDetectDangerousRm:

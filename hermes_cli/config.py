@@ -839,6 +839,8 @@ DEFAULT_CONFIG = {
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
+        "chunk_reply_mode": "thread",  # How multi-chunk tool call results are sent: "first" (all in channel), "thread" (follow-ups in a thread), "all" (reply to every chunk)
+        "defer_interaction": True,     # Auto-defer interaction responses so longer agent runs don't hit Discord's 3s timeout
         # discord_server tool: restrict which actions the agent may call.
         # Default (empty) = all actions allowed (subject to bot privileged intents).
         # Accepts comma-separated string ("list_guilds,list_channels,fetch_messages")
@@ -873,15 +875,15 @@ DEFAULT_CONFIG = {
     },
 
     # Approval mode for dangerous commands:
-    #   manual — always prompt the user (default)
-    #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk
+    #   manual — always prompt the user
+    #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk (default)
     #   off    — skip all approval prompts (equivalent to --yolo)
     #
     # cron_mode — what to do when a cron job hits a dangerous command:
     #   deny    — block the command and let the agent find another way (default, safe)
     #   approve — auto-approve all dangerous commands in cron jobs
     "approvals": {
-        "mode": "manual",
+        "mode": "smart",
         "timeout": 60,
         "cron_mode": "deny",
     },
@@ -1045,30 +1047,50 @@ DEFAULT_CONFIG = {
                 "provider": "",
                 "max_iterations": 8,
                 "toolsets": [],
+                "enabled_tools": None,     # null = all tools in toolset
+                "disabled_tools": [],      # tools explicitly blocked for this tier
+                "enabled_skills": None,    # null = all skills available
+                "disabled_skills": [],     # skills explicitly blocked
             },
             "code": {
                 "model": "",
                 "provider": "",
                 "max_iterations": 40,
                 "toolsets": ["terminal", "file", "code_execution"],
+                "enabled_tools": None,
+                "disabled_tools": [],
+                "enabled_skills": None,
+                "disabled_skills": [],
             },
             "research": {
                 "model": "",
                 "provider": "",
                 "max_iterations": 60,
                 "toolsets": ["web", "browser", "delegation"],
+                "enabled_tools": None,
+                "disabled_tools": [],
+                "enabled_skills": None,
+                "disabled_skills": [],
             },
             "planning": {
                 "model": "",
                 "provider": "",
                 "max_iterations": 25,
                 "toolsets": [],
+                "enabled_tools": None,
+                "disabled_tools": [],
+                "enabled_skills": None,
+                "disabled_skills": [],
             },
             "smart": {
                 "model": "",
                 "provider": "",
                 "max_iterations": 90,
                 "toolsets": None,
+                "enabled_tools": None,
+                "disabled_tools": [],
+                "enabled_skills": None,
+                "disabled_skills": [],
             },
         },
     },

@@ -528,6 +528,12 @@ class DiscordAdapter(BasePlatformAdapter):
         # Reply threading mode: "off" (no replies), "first" (reply on first
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
+        # Chunk reply mode for multi-message tool results:
+        # "first" — all chunks in the channel (existing behavior)
+        # "thread" — first chunk in channel, remaining in an auto-created thread
+        # "all" — reply-reference on every chunk
+        self._chunk_reply_mode: str = getattr(config, 'chunk_reply_mode', 'thread') or 'thread'
+        self._defer_interaction: bool = bool(getattr(config, 'defer_interaction', True))
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
 
     async def connect(self) -> bool:
@@ -1114,15 +1120,28 @@ class DiscordAdapter(BasePlatformAdapter):
                 except Exception as e:
                     logger.debug("Could not fetch reply-to message: %s", e)
 
+            # Thread chunking: when there are multiple chunks and mode is "thread",
+            # send the first chunk to the channel, then create a thread and
+            # send remaining chunks into it. This keeps the main channel clean.
+            thread_for_chunks = None
+            thread_channel_for_chunks = None
+
             for i, chunk in enumerate(chunks):
                 if self._reply_to_mode == "all":
                     chunk_reference = reference
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
+
+                # Determine target: existing channel for first chunk, or thread for follow-ups
+                if i == 0 or thread_for_chunks is None:
+                    target = channel
+                else:
+                    target = thread_channel_for_chunks or channel
+
                 try:
-                    msg = await channel.send(
+                    msg = await target.send(
                         content=chunk,
-                        reference=chunk_reference,
+                        reference=chunk_reference if target is channel else None,
                     )
                 except Exception as e:
                     err_text = str(e)
@@ -1142,13 +1161,28 @@ class DiscordAdapter(BasePlatformAdapter):
                             reply_to,
                         )
                         reference = None
-                        msg = await channel.send(
+                        msg = await target.send(
                             content=chunk,
                             reference=None,
                         )
                     else:
                         raise
                 message_ids.append(str(msg.id))
+
+                # Auto-create thread for remaining chunks if mode is "thread"
+                if i == 0 and len(chunks) > 1 and self._chunk_reply_mode == "thread":
+                    if hasattr(channel, "create_thread") and not self._is_forum_parent(channel):
+                        try:
+                            thread_name = chunks[0][:80] if chunks[0] else "Tool results"
+                            thread_obj = await channel.create_thread(
+                                name=thread_name[:80],
+                                message=msg,
+                            )
+                            thread_for_chunks = thread_obj
+                            thread_channel_for_chunks = thread_obj if hasattr(thread_obj, "send") else getattr(thread_obj, "thread", None)
+                        except Exception as e:
+                            logger.debug("[%s] Failed to create thread for chunks: %s", self.name, e)
+                            # Fall through — remaining chunks go to main channel
 
             return SendResult(
                 success=True,
