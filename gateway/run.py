@@ -2060,6 +2060,29 @@ class GatewayRunner:
 
         # Discover and load event hooks
         self.hooks.discover_and_load()
+
+        # Recover crashed sessions from our checkpoint (fork feature)
+        try:
+            from gateway.checkpoint import recover_crashed_sessions, clear_checkpoint
+            recovered = recover_crashed_sessions(str(_hermes_home))
+            if recovered:
+                for s in recovered:
+                    sk = s["session_key"]
+                    sid = s["session_id"]
+                    if sk and sid:
+                        self.session_store.mark_resume_pending(sk, "crash_recovery")
+                        logger.info("Marked crashed session %s (%s) for resume", sk, sid)
+                logger.info("Recovered %d crashed session(s) from checkpoint", len(recovered))
+        except Exception as e:
+            logger.warning("Session checkpoint recovery: %s", e)
+
+        # Always clear the checkpoint file on a clean boot — sessions that
+        # survive past the 5-minute window won't be recovered, but the
+        # checkpoint is a crash-recovery mechanism, not a persistence store.
+        try:
+            clear_checkpoint(str(_hermes_home))
+        except Exception:
+            pass
         
         # Recover background processes from checkpoint (crash recovery)
         try:
@@ -2217,6 +2240,14 @@ class GatewayRunner:
                     "next_retry": time.monotonic() + 30,
                 }
         
+        # Start session checkpointer (periodic state persistence for crash recovery)
+        try:
+            from gateway.checkpoint import _Checkpointer
+            self._session_checkpointer = _Checkpointer(hermes_home=str(_hermes_home))
+            self._session_checkpointer.start()
+        except Exception as e:
+            logger.debug("Failed to start session checkpointer: %s", e)
+
         if connected_count == 0:
             if startup_nonretryable_errors:
                 reason = "; ".join(startup_nonretryable_errors)
@@ -2762,6 +2793,14 @@ class GatewayRunner:
             # that got respawned between the earlier call and adapter
             # disconnect (defense in depth; safe to call repeatedly).
             _kill_tool_subprocesses("final-cleanup")
+
+            # Stop session checkpointer (fork feature: periodic state persistence)
+            try:
+                _cp = getattr(self, "_session_checkpointer", None)
+                if _cp is not None:
+                    _cp.stop()
+            except Exception as _cpe:
+                logger.debug("Session checkpointer stop error: %s", _cpe)
 
             # Close SQLite session DBs so the WAL write lock is released.
             # Without this, --replace and similar restart flows leave the
@@ -8782,6 +8821,15 @@ class GatewayRunner:
         self._running_agents_ts.pop(session_key, None)
         if hasattr(self, "_busy_ack_ts"):
             self._busy_ack_ts.pop(session_key, None)
+
+        # Unregister from session checkpointer (fork feature)
+        try:
+            _cp = getattr(self, "_session_checkpointer", None)
+            if _cp is not None:
+                _cp.unregister_session(session_key)
+        except Exception:
+            pass
+
         return True
 
     def _clear_session_boundary_security_state(self, session_key: str) -> None:
@@ -10360,6 +10408,24 @@ class GatewayRunner:
                 )
                 return
             self._running_agents[session_key] = agent_holder[0]
+
+            # Register with session checkpointer (fork feature)
+            try:
+                _cp = getattr(self, "_session_checkpointer", None)
+                if _cp is not None:
+                    _model = getattr(agent_holder[0], "model", "") or ""
+                    _provider = getattr(agent_holder[0], "provider", "") or ""
+                    _cp.register_session(
+                        session_key,
+                        session_id=source.session_id or "",
+                        platform=source.platform or "",
+                        chat_id=source.chat_id or "",
+                        model=_model,
+                        provider=_provider,
+                    )
+            except Exception:
+                pass
+
             if self._draining:
                 self._update_runtime_status("draining")
         
