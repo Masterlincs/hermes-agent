@@ -20,7 +20,7 @@ from typing import Any, Dict, Optional, Set
 logger = logging.getLogger(__name__)
 
 CHECKPOINT_FILE = "active_sessions_checkpoint.json"
-CHECKPOINT_INTERVAL = 30  # seconds between checkpoints
+CHECKPOINT_INTERVAL = 10  # seconds between periodic checkpoints
 
 
 # ---------------------------------------------------------------------------
@@ -161,10 +161,12 @@ class _Checkpointer:
         cp = _SessionCheckpoint(session_key=session_key, **kwargs)
         with self._lock:
             self._sessions[session_key] = cp
+        self._save_now()  # Save immediately so crash recovery has data
 
     def unregister_session(self, session_key: str) -> None:
         with self._lock:
             self._sessions.pop(session_key, None)
+        self._save_now()  # Remove from checkpoint file on session end
 
     def update_model(self, session_key: str, model: str, provider: str = "") -> None:
         with self._lock:

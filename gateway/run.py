@@ -2063,7 +2063,7 @@ class GatewayRunner:
 
         # Recover crashed sessions from our checkpoint (fork feature)
         try:
-            from gateway.checkpoint import recover_crashed_sessions, clear_checkpoint
+            from gateway.checkpoint import recover_crashed_sessions
             recovered = recover_crashed_sessions(str(_hermes_home))
             if recovered:
                 for s in recovered:
@@ -2076,13 +2076,14 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("Session checkpoint recovery: %s", e)
 
-        # Always clear the checkpoint file on a clean boot — sessions that
-        # survive past the 5-minute window won't be recovered, but the
-        # checkpoint is a crash-recovery mechanism, not a persistence store.
-        try:
-            clear_checkpoint(str(_hermes_home))
-        except Exception:
-            pass
+        # Don't clear the checkpoint file here — it bridges the gap between
+        # the old gateway shutting down and the new one starting up.  There's
+        # a race: the old gateway's .clean_shutdown marker isn't written until
+        # the very end of stop(), and the new gateway can start before that.
+        # Keeping the checkpoint means recover_crashed_sessions() can still
+        # find recently-active sessions even if the .clean_shutdown marker
+        # was never written.  recover_crashed_sessions() has a 5-minute
+        # window, so stale entries older than 5 min are ignored automatically.
         
         # Recover background processes from checkpoint (crash recovery)
         try:
