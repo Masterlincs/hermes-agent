@@ -7,7 +7,13 @@ from agent.smart_router import (
     _regex_classify,
     _build_result,
     DEFAULT_TIER_CONFIG,
+    clear_router_cache,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_cache():
+    clear_router_cache()
 
 
 class TestCheckOverride:
@@ -117,3 +123,45 @@ class TestClassifyPrompt:
         result = classify_prompt("!code test", config)
         assert result["model"] == ""
         assert result["provider"] == ""
+
+
+class TestSessionCache:
+    def test_cache_hits_on_same_session_key(self):
+        config = {"smart_router": {"enabled": True}}
+        r1 = classify_prompt("debug this", config, session_key="sess-1")
+        assert r1["tier"] == "code"
+
+        # Same session key — should return cached result even with different text
+        r2 = classify_prompt("completely different text", config, session_key="sess-1")
+        assert r2["tier"] == "code"
+        assert r2 is r1  # exact same dict object
+
+    def test_cache_misses_on_different_session_key(self):
+        config = {"smart_router": {"enabled": True}}
+        r1 = classify_prompt("debug this", config, session_key="sess-a")
+        r2 = classify_prompt("hi there", config, session_key="sess-b")
+        assert r1["tier"] == "code"
+        assert r2["tier"] == "fast"
+
+    def test_no_cache_without_session_key(self):
+        config = {"smart_router": {"enabled": True}}
+        r1 = classify_prompt("debug this", config)
+        r2 = classify_prompt("hi there", config)
+        assert r1["tier"] == "code"
+        assert r2["tier"] == "fast"
+
+    def test_cache_eviction_at_limit(self):
+        config = {"smart_router": {"enabled": True}}
+        # Fill cache past _MAX_CACHED_SESSIONS (256)
+        for i in range(260):
+            classify_prompt("hi there", config, session_key=f"sess-{i}")
+        # Oldest entries should have been evicted
+        from agent.smart_router import _ROUTER_CACHE
+        assert len(_ROUTER_CACHE) <= 256
+
+    def test_disabled_still_caches(self):
+        config = {"smart_router": {"enabled": False}}
+        r1 = classify_prompt("anything", config, session_key="sess-x")
+        r2 = classify_prompt("anything else", config, session_key="sess-x")
+        assert r1["tier"] == "smart"
+        assert r2 is r1

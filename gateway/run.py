@@ -1104,7 +1104,7 @@ class GatewayRunner:
         return model, runtime_kwargs
 
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict, session_key: str = None) -> dict:
         """Build the effective model/runtime config for a single turn.
 
         Always uses the session's primary model/provider.  If `/fast` is
@@ -1116,7 +1116,7 @@ class GatewayRunner:
 
         # --- smart-router native module ---
         from agent.smart_router import classify_prompt
-        router_result = classify_prompt(user_message)
+        router_result = classify_prompt(user_message, session_key=session_key)
         # --- smart-router native module ---
 
         runtime = {
@@ -6958,7 +6958,7 @@ class GatewayRunner:
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs, session_key=task_id)
 
             # --- smart-router insertion start ---
             _router_max_iter = turn_route.get("router_max_iterations")
@@ -10214,7 +10214,7 @@ class GatewayRunner:
                 except Exception as _e:
                     logger.debug("interim_assistant_callback error: %s", _e)
 
-            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs, session_key=session_key)
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool

@@ -10,10 +10,35 @@ import logging
 import os
 import re
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+# Per-session router cache so classification only runs once per session.
+_ROUTER_CACHE: OrderedDict[str, Dict[str, Any]] = OrderedDict()
+_MAX_CACHED_SESSIONS = 256
+
+
+def clear_router_cache() -> None:
+    """Clear the router session cache.  Useful in tests."""
+    _ROUTER_CACHE.clear()
+
+
+def _get_cached_result(session_key: str) -> Optional[Dict[str, Any]]:
+    if session_key and session_key in _ROUTER_CACHE:
+        _ROUTER_CACHE.move_to_end(session_key)
+        return _ROUTER_CACHE[session_key]
+    return None
+
+
+def _set_cached_result(session_key: str, result: Dict[str, Any]) -> None:
+    if not session_key:
+        return
+    _ROUTER_CACHE[session_key] = result
+    while len(_ROUTER_CACHE) > _MAX_CACHED_SESSIONS:
+        _ROUTER_CACHE.popitem(last=False)
 
 DEFAULT_TIER_CONFIG = {
     "fast": {
@@ -95,8 +120,12 @@ DEFAULT_CLASSIFIER_PROMPT = (
 def classify_prompt(
     prompt: str,
     config: Optional[Dict[str, Any]] = None,
+    session_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Classify a user prompt into a tier and return resolved config.
+
+    If *session_key* is provided, the result is cached for the lifetime of the
+    session so classification only happens on the first message.
 
     Returns:
         {
@@ -109,18 +138,25 @@ def classify_prompt(
             "toolsets": list[str] | None,
         }
     """
+    cached = _get_cached_result(session_key)
+    if cached is not None:
+        return cached
+
     if config is None:
         config = _load_config()
 
     sr_cfg = config.get("smart_router", {})
     if not sr_cfg.get("enabled", False):
-        return _build_result("smart", 0.0, "fallback", sr_cfg)
+        result = _build_result("smart", 0.0, "fallback", sr_cfg)
+        _set_cached_result(session_key, result)
+        return result
 
     # 1. Check for !tier override prefix
     override_tier = _check_override(prompt)
     if override_tier:
         result = _build_result(override_tier, 1.0, "override", sr_cfg)
         _maybe_log(result, prompt, config)
+        _set_cached_result(session_key, result)
         return result
 
     # 2. Regex classifier
@@ -130,6 +166,7 @@ def classify_prompt(
         if regex_tier:
             result = _build_result(regex_tier, 0.85, "regex", sr_cfg)
             _maybe_log(result, prompt, config)
+            _set_cached_result(session_key, result)
             return result
 
     # 3. LLM classifier
@@ -139,12 +176,14 @@ def classify_prompt(
         if llm_tier and llm_tier in DEFAULT_TIER_CONFIG:
             result = _build_result(llm_tier, 0.75, "llm", sr_cfg)
             _maybe_log(result, prompt, config)
+            _set_cached_result(session_key, result)
             return result
 
     # 4. Fallback
     fallback_tier = sr_cfg.get("fallback_tier", "smart")
     result = _build_result(fallback_tier, 0.0, "fallback", sr_cfg)
     _maybe_log(result, prompt, config)
+    _set_cached_result(session_key, result)
     return result
 
 

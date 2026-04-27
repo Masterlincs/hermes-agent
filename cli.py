@@ -3356,7 +3356,7 @@ class HermesCLI:
         return True
 
 
-    def _resolve_turn_agent_config(self, user_message: str) -> dict:
+    def _resolve_turn_agent_config(self, user_message: str, session_key: str = None) -> dict:
         """Build the effective model/runtime config for a single user turn.
 
         Always uses the session's primary model/provider.  If the user has
@@ -3368,7 +3368,7 @@ class HermesCLI:
 
         # --- smart-router native module ---
         from agent.smart_router import classify_prompt
-        router_result = classify_prompt(user_message)
+        router_result = classify_prompt(user_message, session_key=session_key)
         # --- smart-router native module ---
 
         runtime = {
@@ -6486,7 +6486,7 @@ class HermesCLI:
         _cprint(f"  Task ID: {task_id}")
         _cprint("  You can continue chatting — results will appear when done.\n")
 
-        turn_route = self._resolve_turn_agent_config(prompt)
+        turn_route = self._resolve_turn_agent_config(prompt, session_key=self.session_id)
 
         def run_background():
             set_sudo_password_callback(self._sudo_password_callback)
@@ -8448,7 +8448,7 @@ class HermesCLI:
         if not self._ensure_runtime_credentials():
             return None
 
-        turn_route = self._resolve_turn_agent_config(message)
+        turn_route = self._resolve_turn_agent_config(message, session_key=self.session_id)
         if turn_route["signature"] != self._active_agent_route_signature:
             self.agent = None
 
@@ -11354,7 +11354,7 @@ def main(
                         single_query_images,
                         announce=False,
                     )
-                turn_route = cli._resolve_turn_agent_config(effective_query)
+                turn_route = cli._resolve_turn_agent_config(effective_query, session_key=cli.session_id)
                 if turn_route["signature"] != cli._active_agent_route_signature:
                     cli.agent = None
                 if cli._init_agent(
