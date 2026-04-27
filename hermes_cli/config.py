@@ -1025,11 +1025,6 @@ DEFAULT_CONFIG = {
             "enabled": False,
             "chain": [
                 {
-                    "model": "meta-llama/llama-3.1-8b-instruct",
-                    "provider": "nvidia",
-                    "timeout": 10,
-                },
-                {
                     "model": "google/gemma-4-26b-a4b-it:free",
                     "provider": "openrouter",
                     "timeout": 8,
