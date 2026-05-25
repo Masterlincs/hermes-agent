@@ -827,6 +827,8 @@ DOCUMENT_CACHE_DIR = get_hermes_dir("cache/documents", "document_cache")
 SCREENSHOT_CACHE_DIR = get_hermes_dir("cache/screenshots", "browser_screenshots")
 _HERMES_HOME = get_hermes_home()
 MEDIA_DELIVERY_ALLOW_DIRS_ENV = "HERMES_MEDIA_ALLOW_DIRS"
+MEDIA_DELIVERY_ALLOW_ANYWHERE_ENV = "HERMES_MEDIA_ALLOW_ANYWHERE"
+_MEDIA_DELIVERY_TRUTHY = {"1", "true", "yes", "on"}
 MEDIA_DELIVERY_SAFE_ROOTS = (
     IMAGE_CACHE_DIR,
     AUDIO_CACHE_DIR,
@@ -871,6 +873,13 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     existing regular files under Hermes-managed media caches, or roots the
     operator explicitly allowlists, may be uploaded as native attachments.
     Symlinks are resolved before the containment check.
+
+    When ``HERMES_MEDIA_ALLOW_ANYWHERE`` is truthy (``"1"``, ``"true"``,
+    ``"yes"``, ``"on"`` — case-insensitive), the root-containment check is
+    skipped so any readable file the model emits is deliverable. Intended for
+    single-user / trusted-host deployments where the operator accepts that
+    any path the model can name (including via tool-result injection) can be
+    uploaded.
     """
     if not path:
         return None
@@ -893,6 +902,9 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
 
     if not resolved.is_file():
         return None
+
+    if os.environ.get(MEDIA_DELIVERY_ALLOW_ANYWHERE_ENV, "").strip().lower() in _MEDIA_DELIVERY_TRUTHY:
+        return str(resolved)
 
     for root in _media_delivery_allowed_roots():
         try:

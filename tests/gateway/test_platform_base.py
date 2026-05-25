@@ -426,6 +426,71 @@ class TestMediaDeliveryPathValidation:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(media_file)) == str(media_file.resolve())
 
+    def test_allow_anywhere_lets_outside_root_paths_through(self, tmp_path, monkeypatch):
+        """With HERMES_MEDIA_ALLOW_ANYWHERE=true, files outside the allowlist
+        validate successfully — operator opt-in for trusted single-user hosts."""
+        root = tmp_path / "media-cache"
+        root.mkdir()
+        outsider = tmp_path / "outside.png"
+        outsider.write_bytes(b"\x89PNG")
+        self._patch_roots(monkeypatch, root)
+        monkeypatch.setenv("HERMES_MEDIA_ALLOW_ANYWHERE", "true")
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(outsider)) == str(outsider.resolve())
+
+    def test_allow_anywhere_still_requires_existing_file(self, tmp_path, monkeypatch):
+        """The bypass skips the root-containment check, not the file-existence
+        check — a path that doesn't resolve still returns None."""
+        root = tmp_path / "media-cache"
+        root.mkdir()
+        ghost = tmp_path / "does-not-exist.png"
+        self._patch_roots(monkeypatch, root)
+        monkeypatch.setenv("HERMES_MEDIA_ALLOW_ANYWHERE", "1")
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(ghost)) is None
+
+    def test_allow_anywhere_off_by_default(self, tmp_path, monkeypatch):
+        """Without the env var set, behavior is unchanged — outside paths reject."""
+        root = tmp_path / "media-cache"
+        root.mkdir()
+        outsider = tmp_path / "outside.pdf"
+        outsider.write_bytes(b"%PDF-1.4")
+        self._patch_roots(monkeypatch, root)
+        monkeypatch.delenv("HERMES_MEDIA_ALLOW_ANYWHERE", raising=False)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(outsider)) is None
+
+    def test_allow_anywhere_falsy_values_do_not_enable(self, tmp_path, monkeypatch):
+        """Empty, '0', 'false', and 'no' must NOT enable the bypass — only an
+        explicit truthy opt-in does."""
+        root = tmp_path / "media-cache"
+        root.mkdir()
+        outsider = tmp_path / "outside.txt"
+        outsider.write_text("nope")
+        self._patch_roots(monkeypatch, root)
+
+        for falsy in ("", "0", "false", "FALSE", "no", "off", "anything-else"):
+            monkeypatch.setenv("HERMES_MEDIA_ALLOW_ANYWHERE", falsy)
+            assert BasePlatformAdapter.validate_media_delivery_path(str(outsider)) is None, (
+                f"value {falsy!r} should NOT enable the bypass"
+            )
+
+    def test_allow_anywhere_truthy_aliases(self, tmp_path, monkeypatch):
+        """All documented truthy aliases ('1', 'true', 'yes', 'on') enable
+        the bypass, case-insensitively."""
+        root = tmp_path / "media-cache"
+        root.mkdir()
+        outsider = tmp_path / "outside.gif"
+        outsider.write_bytes(b"GIF89a")
+        self._patch_roots(monkeypatch, root)
+
+        for truthy in ("1", "true", "TRUE", "True", "yes", "YES", "on", "ON"):
+            monkeypatch.setenv("HERMES_MEDIA_ALLOW_ANYWHERE", truthy)
+            assert (
+                BasePlatformAdapter.validate_media_delivery_path(str(outsider))
+                == str(outsider.resolve())
+            ), f"value {truthy!r} should enable the bypass"
+
 
 # ---------------------------------------------------------------------------
 # should_send_media_as_audio
